@@ -980,7 +980,7 @@ def str2bool(v):
 def hipify(
     project_directory: str,
     show_detailed: bool = False,
-    extensions: Iterable = (".cu", ".cuh", ".c", ".cc", ".cpp", ".h", ".in", ".hpp"),
+    extensions: Iterable = (".cu", ".cuh", ".c", ".cc", ".cpp", ".h", ".in", ".hpp", ".pyx", ".pxd"),
     header_extensions: Iterable = (".cuh", ".h", ".hpp"),
     output_directory: str = "",
     header_include_dirs: Iterable = (),
