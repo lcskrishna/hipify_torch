@@ -38,14 +38,13 @@ from typing import Dict, List, Iterator, Optional
 from collections.abc import Mapping, Iterable
 
 class HipifyResult:
-    def __init__(self, current_state="initialized", count=0):
+    def __init__(self, current_state):
         self.current_state = current_state
-        self.count = count
         self.hipified_path = ""
         self.status = ""
 
     def __str__(self):
-       return ("current_state: {}, count: {}, hipified_path : {}, status: {}".format(self.current_state, self.count, self.hipified_path, self.status))
+       return ("HipifyResult:: current_state: {}, hipified_path : {}, status: {}".format(self.current_state, self.hipified_path, self.status))
 
 #HipifyResult = Dict[str, Optional[str]]
 HipifyFinalResult = Dict[str, HipifyResult]
@@ -186,7 +185,7 @@ def preprocess_file_and_save_result(
         clean_ctx: GeneratedFileCleaner,
         show_progress: bool) -> None:
     fin_path = os.path.abspath(os.path.join(output_directory, filepath))
-    hipify_result = HipifyResult(current_state="initialized", count=0)
+    hipify_result = HipifyResult(current_state="initialized")
     hipify_result.hipified_path = fin_path
     HIPIFY_FINAL_RESULT[fin_path] = hipify_result
     result = preprocessor(output_directory, filepath, all_files, header_include_dirs, stats,
@@ -202,7 +201,6 @@ def preprocess_file_and_save_result(
         print(
             fin_path, "->",
             result.hipified_path, result.status, flush=True)
-    print (result)
     HIPIFY_FINAL_RESULT[fin_path] = result
 
 
@@ -768,9 +766,9 @@ def preprocessor(
     if filepath not in all_files:
         hipify_result.hipified_path = None
         hipify_result.status = "[ignored, not to be hipified]"
-        hipify_result.count = 0
         hipify_result.current_state = "done"
         #return {"hipified_path": None, "status": "[ignored, not to be hipified]"}
+        #return {"hipified_path": None, "status": "[ignored, not to be hipified]", "current_state": "done"}
         return hipify_result
     
     rel_filepath = os.path.relpath(filepath, output_directory)
@@ -779,7 +777,6 @@ def preprocessor(
         if fin.readline() == HIPIFY_C_BREADCRUMB:
             hipify_result.hipified_path = None
             hipify_result.status = "[ignored, input is hipified output]"
-            hipify_result.count = 0
             hipify_result.current_state = "done"
             #return {"hipified_path": None, "status": "[ignored, input is hipified output]"}
             return hipify_result
@@ -787,11 +784,6 @@ def preprocessor(
         output_source = fin.read()
 
     orig_output_source = output_source
-    ## move the current status to processing to perform hipification.
-    if hipify_result.current_state == "initialized":
-        hipify_result.current_state = "processing"
-    hipify_result.count = hipify_result.count + 1
-    HIPIFY_FINAL_RESULT[fin_path] = hipify_result
     
     # get_hip_file_path needs a relative path to work correctly
     fout_path = os.path.abspath(os.path.join(output_directory, get_hip_file_path(rel_filepath, is_pytorch_extension)))
@@ -861,19 +853,20 @@ def preprocessor(
                     return m.group(0)
                 # Hipify header file first if needed
                 if header_filepath not in HIPIFY_FINAL_RESULT:
-                    #print ("CHAI ------> {}".format(header_filepath))
+                    print ("CHAI header file path ------>  {}".format(header_filepath))
                     preprocess_file_and_save_result(output_directory,
                                                     header_filepath,
                                                     all_files, header_include_dirs, stats, hip_clang_launch,
                                                     is_pytorch_extension, clean_ctx, show_progress)
                 elif header_filepath in HIPIFY_FINAL_RESULT:
                     header_result = HIPIFY_FINAL_RESULT[header_filepath]
-                    if header_result.current_state == "processing" and header_result.count == 2:
-                        header_result.current_state = "circular"
+                    if header_result.current_state == "initialized":
+                        header_result.hipified_path = fout_path 
+                        print ("CHAI --- inside header initialized : {}".format(fout_path))
                         HIPIFY_FINAL_RESULT[header_filepath] = header_result
-                        return
-                    elif header_result.current_state == "circular" and header_result.count == 3:
+                    elif header_result.current_state == "done":
                         hipified_header_filepath = HIPIFY_FINAL_RESULT[header_filepath].hipified_path
+                        print ("CHAI --- inside header done : {}".format(hipified_header_filepath))
                         return templ.format(os.path.relpath(hipified_header_filepath if hipified_header_filepath is not None
                                                     else header_filepath, header_dir))
                 hipified_header_filepath = HIPIFY_FINAL_RESULT[header_filepath].hipified_path
@@ -885,6 +878,8 @@ def preprocessor(
     output_source = RE_QUOTE_HEADER.sub(mk_repl('#include "{0}"', True), output_source)
     output_source = RE_ANGLE_HEADER.sub(mk_repl('#include <{0}>', False), output_source)
     output_source = RE_THC_GENERIC_FILE.sub(mk_repl('#define THC_GENERIC_FILE "{0}"'), output_source)
+
+    hipify_result = HIPIFY_FINAL_RESULT[fin_path]
 
     # CMakeLists.txt rewrites
     if filepath.endswith('CMakeLists.txt'):
@@ -914,7 +909,6 @@ def preprocessor(
     ):
         hipify_result.hipified_path = fin_path
         hipify_result.status = "[skipped, no changes]"
-        hipify_result.count = 0
         hipify_result.current_state = "done"
         #return {"hipified_path": fin_path, "status": "[skipped, no changes]"}
         return hipify_result
@@ -935,7 +929,6 @@ def preprocessor(
             hipify_result.hipified_path = fout_path
             hipify_result.status = "[ok]"
             hipify_result.current_state = "done"
-            hipify_result.count = 0
             #return {"hipified_path": fout_path, "status": "[ok]"}
             return hipify_result
         except PermissionError as e:
@@ -943,14 +936,12 @@ def preprocessor(
                   file=sys.stderr)
             hipify_result.hipified_path = fin_path
             hipify_result.status = "[skipped, no permissions]"
-            hipify_result.count = 0
             hipify_result.current_state = "done"
             #return {"hipified_path": fin_path, "status": "[skipped, no permissions]"}
             return hipify_result
     else:
         hipify_result.hipified_path = fout_path
         hipify_result.status =  "[skipped, already hipified]"
-        hipify_result.count = 0
         hipify_result.current_state = "done"
         #return {"hipified_path": fout_path, "status": "[skipped, already hipified]"}
         return hipify_result
@@ -1118,6 +1109,7 @@ def hipify(
     all_files = [ os.path.abspath(filepath) for filepath in all_files ]
 
     for filepath in (all_files if not hipify_extra_files_only else extra_files):
+        print ("------ Calling file ------ : {}".format(filepath))
         preprocess_file_and_save_result(output_directory, filepath, all_files, header_include_dirs,
                                         stats, hip_clang_launch, is_pytorch_extension, clean_ctx, show_progress)
 
