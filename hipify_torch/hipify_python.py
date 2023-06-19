@@ -493,24 +493,6 @@ def hip_header_magic(input_string):
     return output_string
 
 
-RE_EXTERN_SHARED = re.compile(r"extern\s+([\w\(\)]+)?\s*__shared__\s+([\w:<>\s]+)\s+(\w+)\s*\[\s*\]\s*;")
-
-
-def replace_extern_shared(input_string):
-    """Match extern __shared__ type foo[]; syntax and use HIP_DYNAMIC_SHARED() MACRO instead.
-       https://github.com/ROCm-Developer-Tools/HIP/blob/master/docs/markdown/hip_kernel_language.md#__shared__
-    Example:
-        "extern __shared__ char smemChar[];" => "HIP_DYNAMIC_SHARED( char, smemChar)"
-        "extern __shared__ unsigned char smem[];" => "HIP_DYNAMIC_SHARED( unsigned char, my_smem)"
-    """
-    output_string = input_string
-    output_string = RE_EXTERN_SHARED.sub(
-        lambda inp: "HIP_DYNAMIC_SHARED({0} {1}, {2})".format(
-            inp.group(1) or "", inp.group(2), inp.group(3)), output_string)
-
-    return output_string
-
-
 def get_hip_file_path(rel_filepath, is_pytorch_extension=False):
     """
     Returns the new name of the hipified file
@@ -612,7 +594,13 @@ def is_pytorch_file(rel_filepath):
 def is_special_file(rel_filepath):
     assert(not os.path.isabs(rel_filepath))
     if is_pytorch_file(rel_filepath):
-        return "sparse" in rel_filepath.lower()
+        return ("sparse" in rel_filepath.lower()) or ("linalg" in rel_filepath.lower())
+    return False
+
+def is_cupy_file(rel_filepath):
+    assert(not os.path.isabs(rel_filepath))
+    if "cupy" in rel_filepath:
+        return True
     return False
 
 def is_caffe2_gpu_file(rel_filepath):
@@ -698,8 +686,12 @@ PYTORCH_MAP: Dict[str, object] = {}
 # but the pytorch mappings assume roc. Therefore, we create a new SPARSE mapping that has a higher priority.
 # Its mappings will trigger first, and only when a miss occurs will the lower-priority pytorch mapping take place.
 # When a file contains "sparse" in the filename, a mapping marked with API_SPARSE is preferred over other choices.
+# Similarly, "linalg" files require rocBLAS -> hipSOLVER so they also need special handling.
 PYTORCH_SPECIAL_MAP = {}
 
+# CuPy special map to switch the CUPY_USE_GEN_HIP_CODE env variable.
+CUPY_TRIE = Trie()
+CUPY_SPECIAL_MAP = {}
 
 for mapping in CUDA_TO_HIP_MAPPINGS:
     assert isinstance(mapping, Mapping)
@@ -717,8 +709,12 @@ for mapping in CUDA_TO_HIP_MAPPINGS:
         if constants.API_PYTORCH not in meta_data:
             CAFFE2_TRIE.add(src)
             CAFFE2_MAP[src] = dst
+        if constants.API_CUPY in meta_data:
+            CUPY_TRIE.add(src)
+            CUPY_SPECIAL_MAP[src] = dst
 RE_CAFFE2_PREPROCESSOR = re.compile(CAFFE2_TRIE.pattern())
 RE_PYTORCH_PREPROCESSOR = re.compile(r'(?<=\W)({0})(?=\W)'.format(PYTORCH_TRIE.pattern()))
+RE_CUPY_PREPROCESSOR = re.compile(CUPY_TRIE.pattern())
 
 RE_QUOTE_HEADER = re.compile(r'#include "([^"]+)"')
 RE_ANGLE_HEADER = re.compile(r'#include <([^>]+)>')
@@ -779,6 +775,10 @@ def preprocessor(
             output_source = RE_PYTORCH_PREPROCESSOR.sub(pt_special_repl, output_source)
         elif is_pytorch_file(rel_filepath):
             output_source = RE_PYTORCH_PREPROCESSOR.sub(pt_repl, output_source)
+        elif is_cupy_file(rel_filepath):
+            def cupy_repl(m):
+                return CUPY_SPECIAL_MAP[m.group(0)]
+            output_source = RE_CUPY_PREPROCESSOR(cupy_repl, output_source)
         else:
             def c2_repl(m):
                 return CAFFE2_MAP[m.group(0)]
@@ -855,9 +855,6 @@ def preprocessor(
 
     # Include header if device code is contained.
     output_source = hip_header_magic(output_source)
-
-    # Replace the extern __shared__
-    output_source = replace_extern_shared(output_source)
 
     # Don't write out identical hipified files for extensions if dirpath has not changed
     if (
@@ -982,7 +979,7 @@ def hipify(
     show_detailed: bool = False,
     extensions: Iterable = (".cu", ".cuh", ".c", ".cc", ".cpp", ".h", ".in", ".hpp"),
     header_extensions: Iterable = (".cuh", ".h", ".hpp"),
-    optional_extensions: Iterable = (),
+    extra_extensions: Iterable = (),
     output_directory: str = "",
     header_include_dirs: Iterable = (),
     includes: Iterable = ('*',),
@@ -1013,7 +1010,7 @@ def hipify(
         ignores = [ignore.replace(project_directory, output_directory) for ignore in ignores]
 
     # update extensions with optional extensions.
-    extensions = extensions + optional_extensions
+    extensions = extensions + extra_extensions
 
     # Copy from project directory to output directory if not done already.
     if not os.path.exists(output_directory):
