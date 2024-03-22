@@ -194,12 +194,15 @@ def preprocess_file_and_save_result(
         hip_clang_launch: bool,
         is_pytorch_extension: bool,
         clean_ctx: GeneratedFileCleaner,
+        extra_extensions: Iterable,
+        extra_extension_breadcrumb: str,
         show_progress: bool) -> None:
     fin_path = os.path.abspath(os.path.join(output_directory, filepath))
     hipify_result = HipifyResult(current_state=CurrentState.INITIALIZED, hipified_path=fin_path)
     HIPIFY_FINAL_RESULT[fin_path] = hipify_result
     result = preprocessor(output_directory, filepath, all_files, header_include_dirs, stats,
-                          hip_clang_launch, is_pytorch_extension, clean_ctx, show_progress)
+                          hip_clang_launch, is_pytorch_extension, clean_ctx,
+                          extra_extensions, extra_extension_breadcrumb, show_progress)
 
     # Show what happened
     if show_progress and "ignored" not in result.status:
@@ -791,6 +794,8 @@ def preprocessor(
         hip_clang_launch: bool,
         is_pytorch_extension: bool,
         clean_ctx: GeneratedFileCleaner,
+        extra_extensions: Iterable,
+        extra_extension_breadcrumb: str,
         show_progress: bool) -> HipifyResult:
     """ Executes the CUDA -> HIP conversion on the specified file. """
     fin_path = os.path.abspath(os.path.join(output_directory, filepath))
@@ -804,7 +809,7 @@ def preprocessor(
     rel_filepath = os.path.relpath(filepath, output_directory)
 
     with open(fin_path, 'r', encoding='utf-8') as fin:
-        if fin.readline() == HIPIFY_C_BREADCRUMB:
+        if fin.readline() == HIPIFY_C_BREADCRUMB or fin.readline() == extra_extension_breadcrumb:
             hipify_result.hipified_path = None
             hipify_result.status = "[ignored, input is hipified output]"
             hipify_result.current_state = CurrentState.DONE
@@ -891,7 +896,8 @@ def preprocessor(
                     preprocess_file_and_save_result(output_directory,
                                                     header_filepath,
                                                     all_files, header_include_dirs, stats, hip_clang_launch,
-                                                    is_pytorch_extension, clean_ctx, show_progress)
+                                                    is_pytorch_extension, clean_ctx, extra_extensions,
+                                                    extra_extension_breadcrumb, show_progress)
                 elif header_filepath in HIPIFY_FINAL_RESULT:
                     header_result = HIPIFY_FINAL_RESULT[header_filepath]
                     if header_result.current_state == CurrentState.INITIALIZED:
@@ -945,6 +951,11 @@ def preprocessor(
     if fin_path != fout_path and match_extensions(fin_path, (".cu", ".cuh", ".c", ".cc", ".cpp", ".h", ".hpp")):
         output_source_ascii=output_source.encode("ascii", "ignore").decode()
         output_source = HIPIFY_C_BREADCRUMB + output_source_ascii
+
+    # Add breadcrumb for extra extensions.
+    if fin_path != fout_path and match_extensions(fin_path, extra_extensions):
+        output_source_ascii=output_source.encode("ascii", "ignore").decode()
+        output_source = extra_extension_breadcrumb + output_source_ascii
 
     do_write = True
     if os.path.exists(fout_path):
@@ -1066,6 +1077,7 @@ def hipify(
     extensions: Iterable = (".cu", ".cuh", ".c", ".cc", ".cpp", ".h", ".in", ".hpp"),
     header_extensions: Iterable = (".cuh", ".h", ".hpp"),
     extra_extensions: Iterable = (),
+    extra_extension_breadcrumb: str = "",
     output_directory: str = "",
     header_include_dirs: Iterable = (),
     includes: Iterable = ('*',),
@@ -1146,7 +1158,8 @@ def hipify(
 
     for filepath in (all_files if not hipify_extra_files_only else extra_files):
         preprocess_file_and_save_result(output_directory, filepath, all_files, header_include_dirs,
-                                        stats, hip_clang_launch, is_pytorch_extension, clean_ctx, show_progress)
+                                        stats, hip_clang_launch, is_pytorch_extension, clean_ctx,
+                                        extra_extensions, extra_extension_breadcrumb, show_progress)
 
     print(bcolors.OKGREEN + "Successfully preprocessed all matching files." + bcolors.ENDC, file=sys.stderr)
 
